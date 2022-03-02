@@ -28,10 +28,10 @@ namespace Nifti.NET
                 }
             }
 
-            if(FileType.HDR == TypeOf(result.Header))
+            if (FileType.HDR == TypeOf(result.Header))
             {
                 var imgpath = path.ToLower().Replace(".hdr", ".img");
-                if(File.Exists(imgpath))
+                if (File.Exists(imgpath))
                 {
                     using (var stream = ReadStream(imgpath))
                     {
@@ -41,6 +41,41 @@ namespace Nifti.NET
             }
 
             if (TypeOf(result.Header) == FileType.UNKNOWN) throw new InvalidDataException("Not a NIfTI file (no magic bytes)");
+
+            return result;
+        }
+
+
+        public static Nifti<T> ReadTyped<T>(string path, short forceType = NiftiHeader.DT_UNKNOWN)
+        {
+
+            var result = new Nifti<T>();
+
+            using (var stream = ReadStream(path))
+            {
+                var hdr = ReadHeader(stream);
+                result.Header = hdr;
+                if (TypeOf(hdr) == FileType.UNKNOWN) throw new InvalidDataException("Not a NIfTI file (no magic bytes)");
+                if (!result.IsType(typeof(T))) throw new FormatException("The Nifti is not of type " + typeof(T));
+
+                if (FileType.NII == TypeOf(hdr))
+                {
+                    result.Data = ReadData<T>(stream, hdr, forceType);
+                }
+            }
+
+            if (FileType.HDR == TypeOf(result.Header))
+            {
+                var imgpath = path.ToLower().Replace(".hdr", ".img");
+                if (File.Exists(imgpath))
+                {
+                    using (var stream = ReadStream(imgpath))
+                    {
+                        result.Data = ReadData<T>(stream, result.Header, forceType);
+                    }
+                }
+            }
+
 
             return result;
         }
@@ -135,7 +170,7 @@ namespace Nifti.NET
             MemoryStream ms = new MemoryStream();
             using (var fs = File.OpenRead(path))
             {
-                if(IsCompressed(path))
+                if (IsCompressed(path))
                 {
                     new GZipStream(fs, CompressionMode.Decompress).CopyTo(ms);
                 }
@@ -172,7 +207,7 @@ namespace Nifti.NET
             var bytelen = stream.Length - stream.Position;
             var data = InitData(datatype, bytelen);
 
-            switch(datatype)
+            switch (datatype)
             {
                 case NiftiHeader.DT_FLOAT32:
                     for (int i = 0; i < data.Length; ++i) data[i] = ReadFloat(stream, reverseBytes);
@@ -211,7 +246,7 @@ namespace Nifti.NET
 
         private static void WriteData(Stream stream, dynamic data)
         {
-            foreach(var voxel in data) Write(stream, voxel);
+            foreach (var voxel in data) Write(stream, voxel);
         }
 
         private static dynamic InitData(short datatype, long bytelen)
@@ -227,6 +262,50 @@ namespace Nifti.NET
             //if (NiftiHeader.DT_BINARY == datatype) return new bool[bytelen * 8];
             return new byte[bytelen];
         }
+
+        private static T[] InitData<T>(short datatype, long bytelen)
+        {
+            if (NiftiHeader.DT_FLOAT32 == datatype) return new T[bytelen / sizeof(float)];
+            if (NiftiHeader.DT_INT32 == datatype) return new T[bytelen / sizeof(int)];
+            if (NiftiHeader.DT_INT16 == datatype) return new T[bytelen / sizeof(short)];
+            if (NiftiHeader.DT_UINT16 == datatype) return new T[bytelen / sizeof(short)];
+            if (NiftiHeader.DT_DOUBLE == datatype) return new T[bytelen / sizeof(double)];
+            if (NiftiHeader.DT_COMPLEX == datatype) return new T[bytelen / sizeof(long)];
+            if (NiftiHeader.DT_RGB24 == datatype) return new T[bytelen / 3];
+            if (NiftiHeader.DT_RGBA32 == datatype) return new T[bytelen / 4];
+            return new T[bytelen];
+        }
+
+
+        private static T[] ReadData<T>(Stream stream, NiftiHeader hdr, short forceType)
+        {
+            var datatype = forceType != NiftiHeader.DT_UNKNOWN ? forceType : hdr.datatype;
+            var reverseBytes = hdr.SourceIsBigEndian();
+            var bytelen = stream.Length - stream.Position;
+            var data = InitData<T>(datatype, bytelen);
+            var tpe = typeof(T);
+
+            if (tpe == typeof(float)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadFloat(stream, reverseBytes);
+            else if (tpe == typeof(double)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadDouble(stream, reverseBytes);
+            else if (tpe == typeof(int)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadInt(stream, reverseBytes);
+            else if (tpe == typeof(uint)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadUInt(stream, reverseBytes);
+            else if (tpe == typeof(short)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadShort(stream, reverseBytes);
+            else if (tpe == typeof(ushort)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadUShort(stream, reverseBytes);
+            else if (tpe == typeof(long)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadLong(stream, reverseBytes);
+            else if (tpe == typeof(byte)) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadByte(stream);
+            else if (tpe == typeof(Color))
+            {
+                if (datatype == NiftiHeader.DT_RGB24) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadRGB(stream, reverseBytes);
+                if (datatype == NiftiHeader.DT_RGBA32) for (int i = 0; i < data.Length; ++i) data[i] = (T)(object)ReadRGBA(stream, reverseBytes);
+            }
+            else
+            {
+                throw new FormatException("Can't read " + typeof(T));
+            }
+
+            return data;
+        }
+
 
         private static NiftiHeader ReadHeader(Stream stream)
         {
@@ -309,7 +388,7 @@ namespace Nifti.NET
 
             return hdr;
         }
-         
+
         private static void Write(Stream stream, NiftiHeader hdr)
         {
             Write(stream, NiftiHeader.EXPECTED_SIZE_OF_HDR);
@@ -409,7 +488,7 @@ namespace Nifti.NET
         }
 
         //private static void Write(Stream stream, byte[] vals) { foreach (var val in vals) Write(stream, val); }
-        private static void Write(Stream stream, byte[] vals) 
+        private static void Write(Stream stream, byte[] vals)
         {
             stream.Write(vals, 0, vals.Length);
         }
@@ -429,8 +508,8 @@ namespace Nifti.NET
 
         private static float ReadFloat(Stream stream, bool reverseBytes)
         {
-            return !reverseBytes ? 
-                BitConverter.ToSingle(ReadBytes(stream, 4), 0) 
+            return !reverseBytes ?
+                BitConverter.ToSingle(ReadBytes(stream, 4), 0)
                 : BitConverter.ToSingle(ReadBytesReversed(stream, 4), 0);
         }
 
@@ -442,7 +521,7 @@ namespace Nifti.NET
         private static int ReadInt(Stream stream, bool reverseBytes)
         {
             return !reverseBytes ?
-                BitConverter.ToInt32(ReadBytes(stream, 4), 0) 
+                BitConverter.ToInt32(ReadBytes(stream, 4), 0)
                 : BitConverter.ToInt32(ReadBytesReversed(stream, 4), 0);
         }
 
@@ -462,7 +541,7 @@ namespace Nifti.NET
         private static ushort[] ReadUrShorts(Stream stream, int count, bool reverseBytes)
         {
             var result = new ushort[count];
-            for(var i = 0; i < count; ++i) result[i] = ReadUShort(stream, reverseBytes);
+            for (var i = 0; i < count; ++i) result[i] = ReadUShort(stream, reverseBytes);
             return result;
         }
 
@@ -476,7 +555,7 @@ namespace Nifti.NET
         private static short[] ReadMyShorts(Stream stream, int count, bool reverseBytes)
         {
             var result = new short[count];
-            for(var i = 0; i < count; ++i) result[i] = ReadShort(stream, reverseBytes);
+            for (var i = 0; i < count; ++i) result[i] = ReadShort(stream, reverseBytes);
             return result;
         }
 
